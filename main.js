@@ -4,7 +4,7 @@ import * as THREE from 'three';
 const GLOBE_RADIUS       = 1;
 const CAMERA_FOV         = 45;
 const CAMERA_INITIAL_Z   = 3;
-const ZOOM_MIN           = 1.5;
+const ZOOM_MIN           = 1.1;
 const ZOOM_MAX           = 8;
 const STAR_COUNT         = 2000;
 const FRICTION           = 0.93;
@@ -24,11 +24,13 @@ camera.position.z = CAMERA_INITIAL_Z;
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // cap at 2x — 3x retina wastes GPU
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
 document.body.appendChild(renderer.domElement);
 
 // ─── Lighting ─────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0xffffff, 0.3)); // keeps dark side from going pure black
-const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+scene.add(new THREE.AmbientLight(0x334466, 0.8)); // deep blue-grey ambient — space-like dark side
+const dirLight = new THREE.DirectionalLight(0xfff5e0, 1.4); // warm sunlight
 dirLight.position.set(5, 3, 5);
 scene.add(dirLight);
 
@@ -51,6 +53,34 @@ const globe = new THREE.Mesh(
   })
 );
 scene.add(globe);
+
+// ─── Atmosphere ───────────────────────────────────────────────────────────────
+// A slightly larger back-face sphere with a fresnel shader produces the blue
+// limb glow visible around Earth from orbit.
+const atmosphere = new THREE.Mesh(
+  new THREE.SphereGeometry(GLOBE_RADIUS * 1.12, 64, 64),
+  new THREE.ShaderMaterial({
+    vertexShader: `
+      varying vec3 vNormal;
+      void main() {
+        vNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vNormal;
+      void main() {
+        float intensity = pow(max(0.0, 0.65 - dot(vNormal, vec3(0.0, 0.0, 1.0))), 2.5);
+        gl_FragColor = vec4(0.25, 0.55, 1.0, 1.0) * intensity;
+      }
+    `,
+    blending: THREE.AdditiveBlending,
+    side: THREE.BackSide,
+    transparent: true,
+    depthWrite: false,
+  })
+);
+scene.add(atmosphere);
 
 // ─── Stars ────────────────────────────────────────────────────────────────────
 // Marsaglia rejection sampling — uniform distribution on sphere (no pole clustering)
@@ -104,8 +134,9 @@ renderer.domElement.addEventListener('mousemove', (e) => {
   if (!ctrl.isDragging) return;
   const dx = e.clientX - ctrl.lastX;
   const dy = e.clientY - ctrl.lastY;
-  ctrl.velocityX = (dx / window.innerHeight) * Math.PI;
-  ctrl.velocityY = (dy / window.innerHeight) * Math.PI;
+  const zoomScale = camera.position.z / CAMERA_INITIAL_Z;
+  ctrl.velocityX = (dx / window.innerHeight) * Math.PI * zoomScale;
+  ctrl.velocityY = (dy / window.innerHeight) * Math.PI * zoomScale;
   applyRotation(ctrl.velocityX, ctrl.velocityY);
   ctrl.lastX = e.clientX;
   ctrl.lastY = e.clientY;
@@ -151,8 +182,9 @@ renderer.domElement.addEventListener('touchmove', (e) => {
   if (e.touches.length === 1 && ctrl.isDragging) {
     const dx = e.touches[0].clientX - ctrl.lastX;
     const dy = e.touches[0].clientY - ctrl.lastY;
-    ctrl.velocityX = (dx / window.innerHeight) * Math.PI;
-    ctrl.velocityY = (dy / window.innerHeight) * Math.PI;
+    const zoomScale = camera.position.z / CAMERA_INITIAL_Z;
+    ctrl.velocityX = (dx / window.innerHeight) * Math.PI * zoomScale;
+    ctrl.velocityY = (dy / window.innerHeight) * Math.PI * zoomScale;
     applyRotation(ctrl.velocityX, ctrl.velocityY);
     ctrl.lastX = e.touches[0].clientX;
     ctrl.lastY = e.touches[0].clientY;
