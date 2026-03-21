@@ -18,6 +18,12 @@
     }
     .back-link:hover { opacity: 1; }
 
+    .version-label {
+      position: fixed; bottom: 1rem; right: 1rem;
+      color: #fff; font-family: monospace; font-size: 0.75rem;
+      z-index: 100; opacity: 0.25; pointer-events: none;
+    }
+
     /* ── Shared panel base ── */
     .panel-base {
       background: rgba(0, 0, 0, 0.6);
@@ -161,7 +167,8 @@
   </script>
 </head>
 <body>
-  <a href="/" class="back-link">&#8592; SW</a>
+  <a href="https://sam-wang.com" class="back-link">&#8592; SW</a>
+  <p class="version-label">v0.6</p>
 
   <!-- Top panel: intro on load, location label during play -->
   <div id="top-panel" class="panel-base">
