@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { initGame } from './game.js';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const GLOBE_RADIUS       = 1;
@@ -81,6 +82,9 @@ const atmosphere = new THREE.Mesh(
   })
 );
 scene.add(atmosphere);
+
+// ─── Game ─────────────────────────────────────────────────────────────────────
+const game = initGame({ scene, globe, camera });
 
 // ─── Stars ────────────────────────────────────────────────────────────────────
 // Marsaglia rejection sampling — uniform distribution on sphere (no pole clustering)
@@ -207,7 +211,6 @@ renderer.domElement.addEventListener('touchend', (e) => {
 // ─── Raycast → Lat/Lng ────────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
 const pointer   = new THREE.Vector2();
-const debugEl   = document.getElementById('debug');
 
 // Convert a world-space point on the globe surface to lat/lng.
 // IMPORTANT: must transform into globe local space first — otherwise
@@ -227,7 +230,7 @@ renderer.domElement.addEventListener('click', (e) => {
   const hits = raycaster.intersectObject(globe);
   if (hits.length > 0) {
     const { lat, lng } = toLatLng(hits[0].point, globe);
-    debugEl.textContent = `lat: ${lat.toFixed(4)}  lng: ${lng.toFixed(4)}`;
+    game.onGlobeClick(lat, lng);
   }
 });
 
@@ -239,8 +242,11 @@ window.addEventListener('resize', () => {
 });
 
 // ─── Animation Loop ───────────────────────────────────────────────────────────
-function animate() {
+let lastTime = 0;
+function animate(time = 0) {
   requestAnimationFrame(animate);
+  const delta = Math.min((time - lastTime) / 1000, 0.1); // cap at 100ms
+  lastTime = time;
 
   if (!ctrl.isDragging) {
     if (Math.abs(ctrl.velocityX) > VELOCITY_THRESHOLD || Math.abs(ctrl.velocityY) > VELOCITY_THRESHOLD) {
@@ -250,6 +256,7 @@ function animate() {
     }
   }
 
+  game.tick(delta);
   renderer.render(scene, camera);
 }
 

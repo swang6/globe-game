@@ -8,20 +8,135 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #000; overflow: hidden; }
     canvas { position: fixed; top: 0; left: 0; display: block; }
-    #debug {
-      position: fixed; bottom: 1rem; left: 1rem;
-      font-family: monospace; font-size: 0.75rem;
-      color: #0f0; background: rgba(0,0,0,0.6);
-      padding: 0.5rem; border-radius: 4px;
-      pointer-events: none; z-index: 10;
-    }
+
     .back-link {
       position: fixed; top: 1rem; left: 1rem;
       color: #fff; text-decoration: none;
       font-family: monospace; font-size: 0.875rem;
-      z-index: 100; opacity: 0.6;
+      z-index: 100; opacity: 0.4;
+      transition: opacity 0.2s;
     }
     .back-link:hover { opacity: 1; }
+
+    /* ── Shared panel base ── */
+    .panel-base {
+      background: rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 12px;
+      color: #fff;
+      font-family: monospace;
+    }
+
+    /* ── Top panel: intro → location label ── */
+    #top-panel {
+      position: fixed; top: 2rem; left: 50%; transform: translateX(-50%);
+      z-index: 100; padding: 1.25rem 2rem; text-align: center;
+      min-width: 300px; max-width: 90vw;
+      pointer-events: auto;
+    }
+
+    #intro-content .intro-text {
+      font-size: 0.85rem; color: rgba(255, 255, 255, 0.75);
+      line-height: 1.6; margin-bottom: 1rem;
+    }
+    #start-btn {
+      font-family: monospace; font-size: 0.9rem;
+      background: rgba(255, 255, 255, 0.1); color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.4); border-radius: 6px;
+      padding: 0.45rem 1.5rem; cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    #start-btn:hover { background: rgba(255, 255, 255, 0.2); border-color: #fff; }
+
+    #round-content .round-label {
+      font-size: 0.7rem; color: rgba(255, 255, 255, 0.45);
+      text-transform: uppercase; letter-spacing: 0.12em; margin-bottom: 0.4rem;
+    }
+    #location-label {
+      font-size: 1.3rem; font-weight: bold; color: #fff;
+      letter-spacing: 0.02em;
+    }
+
+    /* ── HUD score top-left ── */
+    #hud-score {
+      position: fixed; top: 1rem; right: 1rem;
+      font-family: monospace; font-size: 0.85rem;
+      color: rgba(255, 255, 255, 0.55);
+      z-index: 100; pointer-events: none;
+    }
+
+    /* ── Score panel: slides up from bottom ── */
+    #score-panel {
+      position: fixed; bottom: -180px; left: 50%; transform: translateX(-50%);
+      z-index: 100; padding: 1.25rem 2.5rem; text-align: center;
+      min-width: 260px;
+      transition: bottom 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+      pointer-events: none;
+    }
+    #score-panel.visible { bottom: 2rem; pointer-events: auto; }
+
+    #score-panel .distance-line {
+      font-size: 0.8rem; color: rgba(255, 255, 255, 0.55); margin-bottom: 0.4rem;
+    }
+    #score-panel .round-score {
+      font-size: 2.4rem; font-weight: bold; color: #ffd700; line-height: 1;
+    }
+    #score-panel .round-score-label {
+      font-size: 0.65rem; text-transform: uppercase;
+      letter-spacing: 0.12em; color: rgba(255, 255, 255, 0.35);
+      margin-top: 0.2rem; margin-bottom: 1rem;
+    }
+
+    #next-btn {
+      display: block; width: 100%;
+      font-family: monospace; font-size: 0.85rem;
+      background: transparent; color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.4); border-radius: 6px;
+      padding: 0.45rem 1rem; cursor: pointer;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.3s, background 0.2s, border-color 0.2s;
+    }
+    #next-btn.visible { opacity: 1; pointer-events: auto; }
+    #next-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: #fff; }
+
+    /* ── Game over overlay ── */
+    #game-over-panel {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      font-family: monospace; color: #fff;
+      z-index: 200;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.5s;
+    }
+    #game-over-panel.visible { opacity: 1; pointer-events: auto; }
+
+    #game-over-panel h2 {
+      font-size: 1.8rem; font-weight: bold;
+      letter-spacing: 0.05em; margin-bottom: 0.5rem;
+    }
+    #game-over-panel .final-score {
+      font-size: 1.1rem; color: #ffd700; margin-bottom: 2rem;
+    }
+    #restart-btn {
+      font-family: monospace; font-size: 0.9rem;
+      background: transparent; color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.4); border-radius: 6px;
+      padding: 0.5rem 1.75rem; cursor: pointer;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    #restart-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: #fff; }
+
+    /* ── Utility ── */
+    .hidden { display: none; }
+
+    /* Crosshair cursor when waiting for guess */
+    body.waiting canvas { cursor: crosshair; }
   </style>
   <script type="importmap">
   {
@@ -34,7 +149,37 @@
 </head>
 <body>
   <a href="/" class="back-link">&#8592; SW</a>
-  <div id="debug">click the globe</div>
+
+  <!-- Top panel: intro on load, location label during play -->
+  <div id="top-panel" class="panel-base">
+    <div id="intro-content">
+      <p class="intro-text">Spin the globe. Click where you think it is.<br>5 rounds &mdash; up to 1,000 pts each.</p>
+      <button id="start-btn">Start Game</button>
+    </div>
+    <div id="round-content" class="hidden">
+      <p class="round-label">Round <span id="round-num">1</span> of 5</p>
+      <p id="location-label"></p>
+    </div>
+  </div>
+
+  <!-- Running score (top-right) -->
+  <div id="hud-score" class="hidden">0 pts</div>
+
+  <!-- Score panel (slides up from bottom after each guess) -->
+  <div id="score-panel" class="panel-base">
+    <p class="distance-line">Your guess was <span id="distance-display">—</span> km away</p>
+    <p class="round-score" id="round-score-display">0</p>
+    <p class="round-score-label">points</p>
+    <button id="next-btn">Next Round &#8594;</button>
+  </div>
+
+  <!-- Game over -->
+  <div id="game-over-panel">
+    <h2>Game Over</h2>
+    <p class="final-score">Total: <span id="final-score-display">0</span> pts</p>
+    <button id="restart-btn">Play Again</button>
+  </div>
+
   <script type="module" src="./main.js"></script>
 </body>
 </html>
