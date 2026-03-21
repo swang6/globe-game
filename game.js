@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { haversineKm, calcScore } from './scoring.js';
+import { haversineMi, calcScore } from './scoring.js';
 import { LOCATIONS, ROUNDS_PER_GAME } from './locations.js';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -8,14 +8,16 @@ const ARC_SEGMENTS  = 64;
 const MARKER_OFFSET = 0.025; // how far above globe surface markers sit
 const ARC_SPEED     = 0.7;   // progress units per second → ~1.4s for full arc
 
-const COLOR_GUESS  = 0xff6b35; // orange
-const COLOR_ANSWER = 0x44ff88; // green
+const COLOR_GUESS   = 0xff6b35; // orange
+const COLOR_PENDING = 0xffffff; // white — unconfirmed guess
+const COLOR_ANSWER  = 0x44ff88; // green
 
 // ─── State ────────────────────────────────────────────────────────────────────
 const STATE = {
   IDLE:              'IDLE',
   ROUND_START:       'ROUND_START',
   WAITING_FOR_GUESS: 'WAITING_FOR_GUESS',
+  PENDING_GUESS:     'PENDING_GUESS',
   REVEALING:         'REVEALING',
   NEXT_ROUND:        'NEXT_ROUND',
   GAME_OVER:         'GAME_OVER',
@@ -34,13 +36,22 @@ let arcProgress  = 0;
 let arcActive    = false;
 let allArcPoints = [];
 let arcGeo, arcPositions, arcLine;
-let guessMarker  = null;
-let answerMarker = null;
+let guessMarker   = null;
+let pendingMarker = null;
+let answerMarker  = null;
 let currentGuessLat, currentGuessLng;
+let pendingLat, pendingLng;
+
+// ─── Auto-spin state ──────────────────────────────────────────────────────────
+const SPIN_SPEED  = 2.5; // radians per second
+let spinActive    = false;
+let spinTargetX   = 0;
+let spinTargetY   = 0;
 
 // ─── UI element refs ──────────────────────────────────────────────────────────
 let elTopPanel, elIntroContent, elRoundContent;
 let elRoundNum, elLocationLabel;
+let elConfirmBtn, elConfirmHint;
 let elHudScore;
 let elScorePanel, elDistanceDisplay, elRoundScoreDisplay, elNextBtn;
 let elGameOverPanel, elFinalScoreDisplay, elRestartBtn;
@@ -100,8 +111,9 @@ function pickLocations() {
 }
 
 function clearRoundObjects() {
-  if (guessMarker)  { _globe.remove(guessMarker);  guessMarker  = null; }
-  if (answerMarker) { _globe.remove(answerMarker); answerMarker = null; }
+  if (pendingMarker) { _globe.remove(pendingMarker); pendingMarker = null; }
+  if (guessMarker)   { _globe.remove(guessMarker);   guessMarker   = null; }
+  if (answerMarker)  { _globe.remove(answerMarker);  answerMarker  = null; }
   arcGeo.setDrawRange(0, 0);
   arcActive = false;
 }
@@ -129,7 +141,14 @@ function setState(next) {
     setState(STATE.WAITING_FOR_GUESS);
   }
 
+  if (next === STATE.PENDING_GUESS) {
+    elConfirmBtn.classList.remove('hidden');
+    elConfirmHint.classList.remove('hidden');
+  }
+
   if (next === STATE.REVEALING) {
+    elConfirmBtn.classList.add('hidden');
+    elConfirmHint.classList.add('hidden');
     document.body.classList.remove('waiting');
   }
 
@@ -139,35 +158,61 @@ function setState(next) {
   }
 }
 
-function revealGuess(lat, lng) {
-  currentGuessLat = lat;
-  currentGuessLng = lng;
+function setPendingGuess(lat, lng) {
+  pendingLat = lat;
+  pendingLng = lng;
 
-  // Place guess marker
-  guessMarker = createMarker(lat, lng, COLOR_GUESS);
+  // Remove old pending marker if repositioning
+  if (pendingMarker) { _globe.remove(pendingMarker); pendingMarker = null; }
+
+  pendingMarker = createMarker(lat, lng, COLOR_PENDING);
+  _globe.add(pendingMarker);
+
+  if (state !== STATE.PENDING_GUESS) {
+    setState(STATE.PENDING_GUESS);
+  }
+}
+
+function confirmGuess() {
+  if (state !== STATE.PENDING_GUESS) return;
+
+  currentGuessLat = pendingLat;
+  currentGuessLng = pendingLng;
+
+  // Swap pending marker → guess marker color
+  if (pendingMarker) { _globe.remove(pendingMarker); pendingMarker = null; }
+  guessMarker = createMarker(currentGuessLat, currentGuessLng, COLOR_GUESS);
   _globe.add(guessMarker);
 
   // Pre-compute arc
   const loc = roundLocations[currentRound];
-  allArcPoints = computeArcPoints(lat, lng, loc.lat, loc.lng);
+  allArcPoints = computeArcPoints(currentGuessLat, currentGuessLng, loc.lat, loc.lng);
   arcProgress  = 0;
   arcActive    = true;
 
   setState(STATE.REVEALING);
 }
 
+function startSpinToLocation(lat, lng) {
+  spinTargetX = -lat * (Math.PI / 180);
+  spinTargetY  = (90 - lng) * (Math.PI / 180);
+  spinActive   = true;
+}
+
 function onArcComplete() {
   const loc       = roundLocations[currentRound];
-  const distKm    = Math.round(haversineKm(currentGuessLat, currentGuessLng, loc.lat, loc.lng));
-  const score     = calcScore(distKm);
+  const distMi    = Math.round(haversineMi(currentGuessLat, currentGuessLng, loc.lat, loc.lng));
+  const score     = calcScore(distMi);
   totalScore     += score;
+
+  startSpinToLocation(loc.lat, loc.lng);
 
   // Place answer marker
   answerMarker = createMarker(loc.lat, loc.lng, COLOR_ANSWER, 0.028);
   _globe.add(answerMarker);
 
   // Update distance display
-  elDistanceDisplay.textContent = distKm.toLocaleString();
+  elDistanceDisplay.textContent = distMi.toLocaleString();
 
   // Animate score displays
   animateCountUp(elRoundScoreDisplay, score);
@@ -186,6 +231,8 @@ function onArcComplete() {
 
   // Show Next button after short delay
   setTimeout(() => {
+    const isLastRound = currentRound === ROUNDS_PER_GAME - 1;
+    elNextBtn.textContent = isLastRound ? 'See Results' : 'Next Round \u2192';
     elNextBtn.classList.add('visible');
     setState(STATE.NEXT_ROUND);
   }, 1500);
@@ -202,6 +249,8 @@ export function initGame({ scene, globe, camera }) {
   elRoundContent    = document.getElementById('round-content');
   elRoundNum        = document.getElementById('round-num');
   elLocationLabel   = document.getElementById('location-label');
+  elConfirmBtn      = document.getElementById('confirm-btn');
+  elConfirmHint     = document.getElementById('confirm-hint');
   elHudScore        = document.getElementById('hud-score');
   elScorePanel      = document.getElementById('score-panel');
   elDistanceDisplay = document.getElementById('distance-display');
@@ -238,6 +287,9 @@ export function initGame({ scene, globe, camera }) {
     elScorePanel.classList.remove('visible');
     elNextBtn.classList.remove('visible');
     elRoundScoreDisplay.textContent = '0';
+    elConfirmBtn.classList.add('hidden');
+    elConfirmHint.classList.add('hidden');
+    spinActive = false;
 
     clearRoundObjects();
 
@@ -253,15 +305,36 @@ export function initGame({ scene, globe, camera }) {
     location.reload();
   });
 
+  elConfirmBtn.addEventListener('click', () => {
+    confirmGuess();
+  });
+
   setState(STATE.IDLE);
 
   return {
     onGlobeClick(lat, lng) {
-      if (state !== STATE.WAITING_FOR_GUESS) return;
-      revealGuess(lat, lng);
+      if (state !== STATE.WAITING_FOR_GUESS && state !== STATE.PENDING_GUESS) return;
+      setPendingGuess(lat, lng);
     },
 
     tick(delta) {
+      // Auto-spin globe to center the answer location
+      if (spinActive) {
+        const step = SPIN_SPEED * Math.min(delta, 0.1);
+        const dx   = spinTargetX - _globe.rotation.x;
+        const dy   = spinTargetY - _globe.rotation.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 0.005) {
+          _globe.rotation.x = spinTargetX;
+          _globe.rotation.y = spinTargetY;
+          spinActive = false;
+        } else {
+          const t = Math.min(step / dist, 1);
+          _globe.rotation.x += dx * t;
+          _globe.rotation.y += dy * t;
+        }
+      }
+
       if (!arcActive || state !== STATE.REVEALING) return;
 
       arcProgress += Math.min(delta, 0.1) * ARC_SPEED;

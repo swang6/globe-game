@@ -116,6 +116,7 @@ const ctrl = {
   lastY: 0,
   velocityX: 0,
   velocityY: 0,
+  dragDistPx: 0,  // accumulated drag distance since mousedown — used to distinguish click vs drag
 };
 
 // ─── Rotation Helper ──────────────────────────────────────────────────────────
@@ -132,12 +133,14 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   ctrl.lastY = e.clientY;
   ctrl.velocityX = 0;
   ctrl.velocityY = 0;
+  ctrl.dragDistPx = 0;
 });
 
 renderer.domElement.addEventListener('mousemove', (e) => {
   if (!ctrl.isDragging) return;
   const dx = e.clientX - ctrl.lastX;
   const dy = e.clientY - ctrl.lastY;
+  ctrl.dragDistPx += Math.sqrt(dx * dx + dy * dy);
   const zoomScale = camera.position.z / CAMERA_INITIAL_Z;
   ctrl.velocityX = (dx / window.innerHeight) * Math.PI * zoomScale;
   ctrl.velocityY = (dy / window.innerHeight) * Math.PI * zoomScale;
@@ -174,6 +177,7 @@ renderer.domElement.addEventListener('touchstart', (e) => {
     ctrl.lastY = e.touches[0].clientY;
     ctrl.velocityX = 0;
     ctrl.velocityY = 0;
+    ctrl.dragDistPx = 0;
     lastPinchDist = null;
   } else if (e.touches.length === 2) {
     ctrl.isDragging = false;
@@ -186,6 +190,7 @@ renderer.domElement.addEventListener('touchmove', (e) => {
   if (e.touches.length === 1 && ctrl.isDragging) {
     const dx = e.touches[0].clientX - ctrl.lastX;
     const dy = e.touches[0].clientY - ctrl.lastY;
+    ctrl.dragDistPx += Math.sqrt(dx * dx + dy * dy);
     const zoomScale = camera.position.z / CAMERA_INITIAL_Z;
     ctrl.velocityX = (dx / window.innerHeight) * Math.PI * zoomScale;
     ctrl.velocityY = (dy / window.innerHeight) * Math.PI * zoomScale;
@@ -223,7 +228,10 @@ function toLatLng(worldPoint, mesh) {
   };
 }
 
+const CLICK_DRAG_THRESHOLD = 8; // pixels — moves larger than this are drags, not clicks
+
 renderer.domElement.addEventListener('click', (e) => {
+  if (ctrl.dragDistPx > CLICK_DRAG_THRESHOLD) return;
   pointer.x =  (e.clientX / window.innerWidth)  * 2 - 1;
   pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
