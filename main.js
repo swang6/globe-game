@@ -146,20 +146,24 @@ const { positions: starPos, colors: starCol } = sampleStars(STAR_COUNT, 500);
 const starGeo = new THREE.BufferGeometry();
 starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
 starGeo.setAttribute('color',    new THREE.BufferAttribute(starCol, 3));
-scene.add(new THREE.Points(
-  starGeo,
-  new THREE.PointsMaterial({ size: 1.5, sizeAttenuation: false, vertexColors: true }),
-));
 
 // Bright star layer — 100 larger stars, lower brightness exponent so more of them are bright
 const { positions: brightPos, colors: brightCol } = sampleStars(STAR_COUNT_BRIGHT, 500, 1.2, 0.4);
 const brightGeo = new THREE.BufferGeometry();
 brightGeo.setAttribute('position', new THREE.BufferAttribute(brightPos, 3));
 brightGeo.setAttribute('color',    new THREE.BufferAttribute(brightCol, 3));
-scene.add(new THREE.Points(
+
+// Group both layers so a single rotation drives all stars at the same rate
+const starField = new THREE.Group();
+starField.add(new THREE.Points(
+  starGeo,
+  new THREE.PointsMaterial({ size: 1.5, sizeAttenuation: false, vertexColors: true }),
+));
+starField.add(new THREE.Points(
   brightGeo,
   new THREE.PointsMaterial({ size: 3, sizeAttenuation: false, vertexColors: true }),
 ));
+scene.add(starField);
 
 // ─── Controls State ───────────────────────────────────────────────────────────
 const ctrl = {
@@ -354,6 +358,9 @@ function animate(time = 0) {
       ctrl.velocityY *= FRICTION;
     }
   }
+
+  starField.rotation.y += 0.00003;
+  starField.rotation.x += 0.00001;
 
   game.tick(delta);
   renderer.render(scene, camera);
