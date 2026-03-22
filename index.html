@@ -40,8 +40,11 @@
       position: fixed; bottom: 2.5rem; left: 50%; transform: translateX(-50%);
       z-index: 100; padding: 1.25rem 2rem; text-align: center;
       min-width: 300px; max-width: 90vw;
-      pointer-events: auto;
+      pointer-events: none;
+      transition: opacity 0.3s;
     }
+    #top-panel.faded { opacity: 0; }
+    #start-btn { pointer-events: auto; }
 
     #intro-content .intro-text {
       font-size: 0.85rem; color: rgba(255, 255, 255, 0.75);
@@ -65,17 +68,17 @@
       letter-spacing: 0.02em;
     }
     #confirm-btn {
-      display: block; width: 100%; margin-top: 0.85rem;
+      margin-top: 0.9rem;
       font-family: monospace; font-size: 0.85rem;
-      background: rgba(255, 255, 255, 0.12); color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.5); border-radius: 6px;
-      padding: 0.45rem 1rem; cursor: pointer;
+      background: transparent; color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.4); border-radius: 6px;
+      padding: 0.45rem 1.4rem; cursor: pointer; pointer-events: auto;
       transition: background 0.2s, border-color 0.2s;
     }
-    #confirm-btn:hover { background: rgba(255, 255, 255, 0.22); border-color: #fff; }
+    #confirm-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: #fff; }
     #confirm-hint {
-      font-size: 0.7rem; color: rgba(255, 255, 255, 0.4);
-      margin-top: 0.5rem;
+      font-family: monospace; font-size: 0.7rem; color: rgba(255, 255, 255, 0.4);
+      margin-top: 0.4rem;
     }
 
     /* ── HUD score top-left ── */
@@ -94,7 +97,8 @@
       transition: bottom 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
       pointer-events: none;
     }
-    #score-panel.visible { bottom: 2.5rem; pointer-events: auto; }
+    #score-panel.visible { bottom: 2.5rem; }
+    #score-panel button { pointer-events: auto; }
 
     #score-panel .distance-line {
       font-size: 0.8rem; color: rgba(255, 255, 255, 0.55); margin-bottom: 0.4rem;
@@ -151,6 +155,58 @@
     }
     #restart-btn:hover { background: rgba(255, 255, 255, 0.1); border-color: #fff; }
 
+    /* ── Scoreboard (left side, vertically centered) ── */
+    #scoreboard {
+      position: fixed; left: 1.5rem; top: 50%; transform: translateY(-50%);
+      z-index: 100; padding: 1rem 1.25rem; min-width: 220px;
+      pointer-events: none;
+    }
+    .sb-title {
+      font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.12em;
+      color: rgba(255,255,255,0.35); margin-bottom: 0.6rem;
+    }
+    .sb-row {
+      display: flex; align-items: baseline; gap: 0.5rem;
+      font-size: 0.78rem; margin-bottom: 0.3rem;
+    }
+    .sb-num  { color: rgba(255,255,255,0.3); width: 1em; flex-shrink: 0; }
+    .sb-city { flex: 1; color: rgba(255,255,255,0.75); white-space: nowrap;
+               overflow: hidden; text-overflow: ellipsis; }
+    .sb-pts  { font-size: 0.75rem; white-space: nowrap; }
+    #sb-total-row {
+      display: flex; align-items: baseline; justify-content: space-between;
+      margin-top: 0.5rem; padding-top: 0.5rem;
+      border-top: 1px solid rgba(255,255,255,0.15);
+      font-size: 0.75rem;
+    }
+    #sb-total-label { color: rgba(255,255,255,0.4); }
+    #sb-total-pts   { color: rgba(255,255,255,0.75); }
+    #share-btn {
+      display: block; width: 100%; margin-top: 0.75rem;
+      font-family: monospace; font-size: 0.75rem;
+      background: rgba(255,255,255,0.08); color: #fff;
+      border: 1px solid rgba(255,255,255,0.25); border-radius: 5px;
+      padding: 0.35rem 0.75rem; cursor: pointer; pointer-events: auto;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    #share-btn:hover { background: rgba(255,255,255,0.18); border-color: #fff; }
+
+    /* ── Debug panel ── */
+    #debug-panel {
+      display: none;
+      position: fixed; top: 1rem; left: 50%; transform: translateX(-50%);
+      z-index: 300; padding: 0.75rem 1rem;
+      background: rgba(0,0,0,0.75); border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px; color: #fff; font-family: monospace; font-size: 0.75rem;
+      min-width: 280px; pointer-events: auto;
+    }
+    #debug-panel.visible { display: block; }
+    .dbg-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
+    .dbg-row label { width: 90px; opacity: 0.7; }
+    .dbg-row input[type=range] { flex: 1; }
+    .dbg-row span { width: 36px; text-align: right; }
+    #dbg-readout { margin-top: 0.5rem; opacity: 0.6; line-height: 1.6; }
+
     /* ── Utility ── */
     .hidden { display: none; }
 
@@ -168,7 +224,7 @@
 </head>
 <body>
   <a href="https://sam-wang.com" class="back-link">&#8592; SW</a>
-  <p class="version-label">v0.6</p>
+  <p class="version-label">v0.9</p>
 
   <!-- Top panel: intro on load, location label during play -->
   <div id="top-panel" class="panel-base">
@@ -202,6 +258,77 @@
     <button id="restart-btn">Play Again</button>
   </div>
 
+  <!-- Scoreboard (left side, appears after first round completes) -->
+  <div id="scoreboard" class="panel-base hidden">
+    <p class="sb-title">Scores</p>
+    <div id="sb-rows"></div>
+    <div id="sb-total-row" class="hidden">
+      <span id="sb-total-label">Total</span>
+      <span id="sb-total-pts"></span>
+    </div>
+    <button id="share-btn" class="hidden">Share Results</button>
+  </div>
+
+  <!-- Debug panel (shown only when ?debug is in URL) -->
+  <div id="debug-panel">
+    <div class="dbg-row"><label>zoom min</label>   <input type="range" id="dbg-zoom-min" min="1.0" max="3.0" step="0.05"><span id="dbg-zoom-min-val"></span></div>
+    <div class="dbg-row"><label>zoom max</label>   <input type="range" id="dbg-zoom-max" min="3.0" max="15"  step="0.25"><span id="dbg-zoom-max-val"></span></div>
+    <div id="dbg-readout"></div>
+  </div>
+
   <script type="module" src="./main.js"></script>
+
+  <script>
+    if (location.search.includes('debug')) {
+      // Show panel immediately; wire sliders once modules have loaded
+      document.getElementById('debug-panel').classList.add('visible');
+
+      window.addEventListener('load', () => {
+        // Wait a tick for ES modules to finish executing
+        setTimeout(() => {
+          const d = window.__dbg;
+          if (!d) return;
+
+          const camera = d.getCamera();
+          const globe  = d.getGlobe();
+
+          // Helper to wire one slider
+          function wire(id, valId, init, setter) {
+            const el  = document.getElementById(id);
+            const val = document.getElementById(valId);
+            el.value = init;
+            val.textContent = (+init).toFixed(2);
+            el.addEventListener('input', () => {
+              const v = parseFloat(el.value);
+              val.textContent = v.toFixed(2);
+              setter(v);
+            });
+          }
+
+          wire('dbg-zoom-min', 'dbg-zoom-min-val', 1.5, d.setZoomMin);
+          wire('dbg-zoom-max', 'dbg-zoom-max-val', 8,   d.setZoomMax);
+
+          // Clamp zoom on slider change
+          document.getElementById('dbg-zoom-min').addEventListener('input', () => {
+            const v = parseFloat(document.getElementById('dbg-zoom-min').value);
+            if (camera.position.z < v) camera.position.z = v;
+          });
+
+          // Live readout
+          const readout = document.getElementById('dbg-readout');
+          (function loop() {
+            requestAnimationFrame(loop);
+            const z = camera.position.z.toFixed(3);
+            let facingStr = '';
+            try {
+              const { lat, lng } = d.getFacingLatLng();
+              facingStr = `facing ${lat}°, ${lng}°`;
+            } catch(e) {}
+            readout.textContent = `cam z: ${z}   ${facingStr}`;
+          })();
+        }, 200);
+      });
+    }
+  </script>
 </body>
 </html>

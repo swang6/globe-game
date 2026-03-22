@@ -5,11 +5,13 @@ import { initGame } from './game.js';
 const GLOBE_RADIUS       = 1;
 const CAMERA_FOV         = 45;
 const CAMERA_INITIAL_Z   = 3;
-const ZOOM_MIN           = 1.1;
-const ZOOM_MAX           = 8;
-const STAR_COUNT         = 2000;
+let ZOOM_MIN             = 1.5;
+let ZOOM_MAX             = 8;
+const STAR_COUNT         = 5000;
+const STAR_COUNT_BRIGHT  = 100;
 const FRICTION           = 0.93;
 const VELOCITY_THRESHOLD = 0.0001;
+const MAX_TILT           = 65 * Math.PI / 180; // ~1.13 rad — prevents globe from tipping sideways
 
 // ─── Scene, Camera, Renderer ─────────────────────────────────────────────────
 const scene = new THREE.Scene();
@@ -83,30 +85,80 @@ const atmosphere = new THREE.Mesh(
 );
 scene.add(atmosphere);
 
+// ─── Debug interface (gated on ?debug URL param) ──────────────────────────────
+// Must be created before initGame so game.js can extend it.
+if (location.search.includes('debug')) {
+  window.__dbg = {
+    getCamera: () => camera,
+    getGlobe:  () => globe,
+    setZoomMin: v => { ZOOM_MIN = v; },
+    setZoomMax: v => { ZOOM_MAX = v; },
+    getFacingLatLng() {
+      globe.updateMatrixWorld(true);
+      const worldFwd = new THREE.Vector3(0, 0, 1);
+      const local    = globe.worldToLocal(worldFwd.clone()).normalize();
+      return {
+        lat: (Math.asin(local.y) * 180 / Math.PI).toFixed(1),
+        lng: (Math.atan2(-local.z, local.x) * 180 / Math.PI).toFixed(1),
+      };
+    },
+  };
+}
+
 // ─── Game ─────────────────────────────────────────────────────────────────────
 const game = initGame({ scene, globe, camera });
 
 // ─── Stars ────────────────────────────────────────────────────────────────────
 // Marsaglia rejection sampling — uniform distribution on sphere (no pole clustering)
-const starPositions = new Float32Array(STAR_COUNT * 3);
-for (let i = 0; i < STAR_COUNT; i++) {
-  let x, y, z, d;
-  do {
-    x = Math.random() * 2 - 1;
-    y = Math.random() * 2 - 1;
-    z = Math.random() * 2 - 1;
-    d = x*x + y*y + z*z;
-  } while (d > 1 || d === 0);
-  const s = 500 / Math.sqrt(d);
-  starPositions[i*3]     = x * s;
-  starPositions[i*3 + 1] = y * s;
-  starPositions[i*3 + 2] = z * s;
+// Uniform sphere sample (Marsaglia) with power-law brightness + subtle color temperature.
+// Power-law (x^2.5) gives many dim stars and a few bright ones — matches real sky statistics.
+function sampleStars(count, radius, brightnessPow = 2.5, minBrightness = 0.12) {
+  const positions = new Float32Array(count * 3);
+  const colors    = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    let x, y, z, d;
+    do {
+      x = Math.random() * 2 - 1;
+      y = Math.random() * 2 - 1;
+      z = Math.random() * 2 - 1;
+      d = x*x + y*y + z*z;
+    } while (d > 1 || d === 0);
+    const s = radius / Math.sqrt(d);
+    positions[i*3]     = x * s;
+    positions[i*3 + 1] = y * s;
+    positions[i*3 + 2] = z * s;
+
+    const b    = Math.pow(Math.random(), brightnessPow);
+    const lum  = minBrightness + b * (1 - minBrightness);
+    const temp = Math.random(); // color temperature: 0=cool/orange, 1=hot/blue
+    const r = lum * (temp < 0.12 ? 0.80 : temp > 0.88 ? 1.00 : 1.0);
+    const g = lum * 1.0;
+    const bv = lum * (temp < 0.12 ? 0.80 : temp > 0.88 ? 1.00 : 0.92);
+    colors[i*3]     = r;
+    colors[i*3 + 1] = g;
+    colors[i*3 + 2] = bv;
+  }
+  return { positions, colors };
 }
+
+// Primary field — 5000 stars at 1.5px constant screen size
+const { positions: starPos, colors: starCol } = sampleStars(STAR_COUNT, 500);
 const starGeo = new THREE.BufferGeometry();
-starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+starGeo.setAttribute('color',    new THREE.BufferAttribute(starCol, 3));
 scene.add(new THREE.Points(
   starGeo,
-  new THREE.PointsMaterial({ color: 0xffffff, size: 0.5, sizeAttenuation: true })
+  new THREE.PointsMaterial({ size: 1.5, sizeAttenuation: false, vertexColors: true }),
+));
+
+// Bright star layer — 100 larger stars, lower brightness exponent so more of them are bright
+const { positions: brightPos, colors: brightCol } = sampleStars(STAR_COUNT_BRIGHT, 500, 1.2, 0.4);
+const brightGeo = new THREE.BufferGeometry();
+brightGeo.setAttribute('position', new THREE.BufferAttribute(brightPos, 3));
+brightGeo.setAttribute('color',    new THREE.BufferAttribute(brightCol, 3));
+scene.add(new THREE.Points(
+  brightGeo,
+  new THREE.PointsMaterial({ size: 3, sizeAttenuation: false, vertexColors: true }),
 ));
 
 // ─── Controls State ───────────────────────────────────────────────────────────
@@ -120,10 +172,28 @@ const ctrl = {
 };
 
 // ─── Rotation Helper ──────────────────────────────────────────────────────────
+// Quaternion-based rotation avoids Euler decomposition issues after SLERP animations.
+// Tilt clamp: check where north pole lands after the pitch — block if it exceeds MAX_TILT.
+const _qY    = new THREE.Quaternion();
+const _qX    = new THREE.Quaternion();
+const _axisY = new THREE.Vector3(0, 1, 0);
+const _axisX = new THREE.Vector3(1, 0, 0);
+const _north = new THREE.Vector3();
+const MAX_TILT_COS = Math.cos(MAX_TILT); // ≈ 0.42 — north pole y must exceed this
+
 function applyRotation(dx, dy) {
-  globe.rotation.y += dx;
-  // clamp x rotation to prevent pole flip
-  globe.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, globe.rotation.x + dy));
+  // Yaw: rotate around world Y (horizontal drag)
+  _qY.setFromAxisAngle(_axisY, dx);
+  globe.quaternion.premultiply(_qY);
+
+  // Pitch: rotate around world X (vertical drag), with tilt clamping
+  _qX.setFromAxisAngle(_axisX, dy);
+  // Test where north pole would land after applying qX:
+  // premultiply(qX) → new quaternion is (qX * globe.q), so north = (0,1,0) rotated by globe.q then by qX
+  _north.set(0, 1, 0).applyQuaternion(globe.quaternion).applyQuaternion(_qX);
+  if (_north.y > MAX_TILT_COS) {
+    globe.quaternion.premultiply(_qX);
+  }
 }
 
 // ─── Mouse Events ─────────────────────────────────────────────────────────────
@@ -206,8 +276,25 @@ renderer.domElement.addEventListener('touchmove', (e) => {
   }
 }, { passive: false });
 
+let lastTouchHandled = false;
+
 renderer.domElement.addEventListener('touchend', (e) => {
   if (e.touches.length === 0) {
+    if (ctrl.dragDistPx < CLICK_DRAG_THRESHOLD) {
+      const touch = e.changedTouches[0];
+      pointer.x =  (touch.clientX / window.innerWidth)  * 2 - 1;
+      pointer.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      globe.updateMatrixWorld(true);
+      const hits = raycaster.intersectObject(globe);
+      if (hits.length > 0) {
+        const { lat, lng } = toLatLng(hits[0].point, globe);
+        ctrl.velocityX = 0;
+        ctrl.velocityY = 0;
+        game.onGlobeClick(lat, lng);
+        lastTouchHandled = true;
+      }
+    }
     ctrl.isDragging = false;
     lastPinchDist = null;
   }
@@ -224,20 +311,24 @@ function toLatLng(worldPoint, mesh) {
   const local = mesh.worldToLocal(worldPoint.clone()).normalize();
   return {
     lat: Math.asin(local.y) * (180 / Math.PI),
-    lng: Math.atan2(local.z, local.x) * (180 / Math.PI),
+    lng: Math.atan2(-local.z, local.x) * (180 / Math.PI),
   };
 }
 
-const CLICK_DRAG_THRESHOLD = 8; // pixels — moves larger than this are drags, not clicks
+const CLICK_DRAG_THRESHOLD = 20; // pixels — raised for trackpad friendliness
 
 renderer.domElement.addEventListener('click', (e) => {
+  if (lastTouchHandled) { lastTouchHandled = false; return; }
   if (ctrl.dragDistPx > CLICK_DRAG_THRESHOLD) return;
   pointer.x =  (e.clientX / window.innerWidth)  * 2 - 1;
   pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
+  globe.updateMatrixWorld(true); // ensure matrix is current before worldToLocal
   const hits = raycaster.intersectObject(globe);
   if (hits.length > 0) {
     const { lat, lng } = toLatLng(hits[0].point, globe);
+    ctrl.velocityX = 0; // stop inertia so globe doesn't drift after the guess is placed
+    ctrl.velocityY = 0;
     game.onGlobeClick(lat, lng);
   }
 });

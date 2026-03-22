@@ -6,6 +6,8 @@ import { LOCATIONS, ROUNDS_PER_GAME } from './locations.js';
 const GLOBE_RADIUS = 1;
 const ARC_SEGMENTS = 64;
 const ARC_SPEED    = 0.7; // progress units per second → ~1.4s for full arc
+const MAX_TILT     = 65 * Math.PI / 180; // mirrors main.js — prevents euler clamp jump after slerp
+const ZOOM_FINAL   = 1.75; // final tight zoom after reveal
 
 const COLOR_GUESS   = 0xff6b35; // orange
 const COLOR_PENDING = 0xffffff; // white — unconfirmed guess
@@ -29,9 +31,10 @@ let roundLocations = [];
 
 // ─── Three.js refs (set by initGame) ─────────────────────────────────────────
 let _globe;
+let _camera;
 
 // ─── Arc state ────────────────────────────────────────────────────────────────
-let arcProgress  = 0;
+let arcElapsed   = 0; // seconds elapsed since arc started (replaces linear arcProgress)
 let arcActive    = false;
 let allArcPoints = [];
 let arcGeo, arcPositions, arcLine;
@@ -41,19 +44,51 @@ let answerMarker  = null;
 let currentGuessLat, currentGuessLng;
 let pendingLat, pendingLng;
 
-// ─── Auto-spin state ──────────────────────────────────────────────────────────
-const SPIN_SPEED = 2.5; // radians per second
-let spinActive   = false;
-let spinTargetX  = 0;
-let spinTargetY  = 0;
+// ─── Auto-spin / zoom state ───────────────────────────────────────────────────
+const SPIN_DURATION  = 1.0 / ARC_SPEED; // matches arc draw time so both finish together
+let spinActive       = false;
+let spinJustStarted  = false; // true on first tick so spinStartQuat is captured after inertia runs
+let spinStartQuat    = new THREE.Quaternion();
+let spinTargetQuat   = new THREE.Quaternion();
+let spinElapsed      = 0;
+let zoomStartZ   = null;  // camera z at start of animation
+let zoomTargetZ  = null;  // destination z (null = inactive)
+let zoomDuration = 0;     // seconds
+let zoomElapsed  = 0;     // seconds elapsed
+let zoomInTimer  = null;  // setTimeout ID for phase-2 zoom
+
+// ─── Scoreboard state ─────────────────────────────────────────────────────────
+let roundScores = []; // { label, score, distMi } — one per completed round
 
 // ─── UI element refs ──────────────────────────────────────────────────────────
+let elTopPanel;
 let elIntroContent, elRoundContent;
 let elRoundNum, elLocationLabel;
 let elConfirmBtn, elConfirmHint;
 let elHudScore;
 let elScorePanel, elDistanceDisplay, elRoundScoreDisplay, elNextBtn;
 let elGameOverPanel, elFinalScoreDisplay;
+let elScoreboard, elSbRows, elSbTotalRow, elSbTotalPts, elShareBtn;
+
+// ─── Glow texture (shared across all markers) ────────────────────────────────
+// Radial gradient on a canvas → CanvasTexture gives a soft circular glow dot.
+function makeGlowTexture() {
+  const size   = 64;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx  = canvas.getContext('2d');
+  const r    = size / 2;
+  const grad = ctx.createRadialGradient(r, r, 0, r, r, r);
+  grad.addColorStop(0,   'rgba(255,255,255,1.0)');
+  grad.addColorStop(0.35,'rgba(255,255,255,0.7)');
+  grad.addColorStop(1,   'rgba(255,255,255,0.0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(r, r, r, 0, Math.PI * 2);
+  ctx.fill();
+  return new THREE.CanvasTexture(canvas);
+}
+const glowTexture = makeGlowTexture();
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -64,7 +99,7 @@ let elGameOverPanel, elFinalScoreDisplay;
  */
 function latLngToLocal(lat, lng, radius) {
   const phi   = (90 - lat) * (Math.PI / 180);
-  const theta = lng         * (Math.PI / 180);
+  const theta = -lng        * (Math.PI / 180); // negated: +Z in Three.js sphere = 90°W = lng -90°
   return new THREE.Vector3(
     radius * Math.sin(phi) * Math.cos(theta),
     radius * Math.cos(phi),
@@ -79,26 +114,29 @@ function latLngToLocal(lat, lng, radius) {
 function createMarker(lat, lng, color) {
   const group = new THREE.Group();
 
-  const base = latLngToLocal(lat, lng, GLOBE_RADIUS + 0.002);
+  const base = latLngToLocal(lat, lng, GLOBE_RADIUS + 0.01);
   const tip  = latLngToLocal(lat, lng, GLOBE_RADIUS + 0.18);
 
-  // Thin spike line
+  // Thin spike line — depthTest: true hides it when behind the globe
   const lineGeo = new THREE.BufferGeometry().setFromPoints([base, tip]);
   const line = new THREE.Line(
     lineGeo,
-    new THREE.LineBasicMaterial({ color, depthTest: false }),
+    new THREE.LineBasicMaterial({ color, depthTest: true }),
   );
   line.renderOrder = 1;
   group.add(line);
 
-  // Constant screen-size dot at the tip — visible at any zoom
+  // Glowing dot at the base — marks the exact clicked location, constant pixel size
   const dotGeo = new THREE.BufferGeometry();
   dotGeo.setAttribute('position', new THREE.BufferAttribute(
-    new Float32Array([tip.x, tip.y, tip.z]), 3,
+    new Float32Array([base.x, base.y, base.z]), 3,
   ));
   const dot = new THREE.Points(
     dotGeo,
-    new THREE.PointsMaterial({ color, size: 6, sizeAttenuation: false, depthTest: false }),
+    new THREE.PointsMaterial({
+      color, size: 20, sizeAttenuation: false, depthTest: true,
+      map: glowTexture, transparent: true, alphaTest: 0.01,
+    }),
   );
   dot.renderOrder = 2;
   group.add(dot);
@@ -121,7 +159,7 @@ function computeArcPoints(lat1, lng1, lat2, lng2) {
   for (let i = 0; i <= ARC_SEGMENTS; i++) {
     const t    = i / ARC_SEGMENTS;
     const pt   = new THREE.Vector3().copy(start).lerp(end, t).normalize();
-    const lift = Math.sin(t * Math.PI) * 0.12;
+    const lift = Math.sin(t * Math.PI) * 0.20;
     pts.push(pt.multiplyScalar(GLOBE_RADIUS + 0.025 + lift));
   }
   return pts;
@@ -146,7 +184,8 @@ function clearRoundObjects() {
   if (guessMarker)   { _globe.remove(guessMarker);   disposeMarker(guessMarker);   guessMarker   = null; }
   if (answerMarker)  { _globe.remove(answerMarker);  disposeMarker(answerMarker);  answerMarker  = null; }
   arcGeo.setDrawRange(0, 0);
-  arcActive = false;
+  arcElapsed = 0;
+  arcActive  = false;
 }
 
 // ─── State machine ────────────────────────────────────────────────────────────
@@ -157,6 +196,7 @@ function setState(next) {
   if (next === STATE.ROUND_START) {
     const loc = roundLocations[currentRound];
 
+    elTopPanel.classList.remove('faded');
     elIntroContent.classList.add('hidden');
     elRoundContent.classList.remove('hidden');
     elRoundNum.textContent      = currentRound + 1;
@@ -178,6 +218,7 @@ function setState(next) {
   }
 
   if (next === STATE.REVEALING) {
+    elTopPanel.classList.add('faded');
     elConfirmBtn.classList.add('hidden');
     elConfirmHint.classList.add('hidden');
     document.body.classList.remove('waiting');
@@ -186,6 +227,7 @@ function setState(next) {
   if (next === STATE.GAME_OVER) {
     elFinalScoreDisplay.textContent = totalScore.toLocaleString();
     elGameOverPanel.classList.add('visible');
+    elShareBtn.classList.remove('hidden');
   }
 }
 
@@ -202,6 +244,13 @@ function setPendingGuess(lat, lng) {
   }
 }
 
+function startZoom(targetZ, duration) {
+  zoomStartZ   = _camera.position.z;
+  zoomTargetZ  = targetZ;
+  zoomDuration = duration;
+  zoomElapsed  = 0;
+}
+
 function confirmGuess() {
   if (state !== STATE.PENDING_GUESS) return;
 
@@ -214,16 +263,63 @@ function confirmGuess() {
 
   const loc    = roundLocations[currentRound];
   allArcPoints = computeArcPoints(currentGuessLat, currentGuessLng, loc.lat, loc.lng);
-  arcProgress  = 0;
+  arcElapsed   = 0;
   arcActive    = true;
+
+  // Phase-1 zoom: fast ease-out to reveal distance (both pins visible)
+  const revealDist = haversineMi(currentGuessLat, currentGuessLng, loc.lat, loc.lng);
+  startZoom(Math.max(1.8, Math.min(4.2, 1.9 + (revealDist / 1553) * 2.5)), 0.8);
+
+  // Start spinning immediately — globe rotates to answer while arc draws
+  startSpinToLocation(loc.lat, loc.lng);
 
   setState(STATE.REVEALING);
 }
 
 function startSpinToLocation(lat, lng) {
-  spinTargetX = -lat * (Math.PI / 180);
-  spinTargetY = (90 - lng) * (Math.PI / 180);
-  spinActive  = true;
+  const p  = latLngToLocal(lat, lng, 1).normalize();
+  const q0 = new THREE.Quaternion().setFromUnitVectors(p, new THREE.Vector3(0, 0, 1));
+
+  // Where does the north pole end up after q0?
+  const north = new THREE.Vector3(0, 1, 0).applyQuaternion(q0);
+  // +roll rotates (north.x, north.y) to (0, r) — north pointing up on screen
+  const roll  = Math.atan2(north.x, north.y);
+  const qCorr = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), roll);
+
+  // Apply q0 first, then qCorr: city faces camera AND north points up
+  spinTargetQuat.copy(qCorr).multiply(q0);
+
+  spinElapsed     = 0;
+  spinActive      = true;
+  spinJustStarted = true; // spinStartQuat will be captured on the first tick, after inertia runs
+}
+
+function scoreColor(score) {
+  if (score >= 800) return '#4caf50';
+  if (score >= 600) return '#8bc34a';
+  if (score >= 400) return '#ffd700';
+  if (score >= 200) return '#ff9800';
+  return '#f44336';
+}
+
+function scoreEmoji(score) {
+  if (score >= 800) return '🟢';
+  if (score >= 400) return '🟡';
+  if (score >= 200) return '🟠';
+  return '🔴';
+}
+
+function updateScoreboard() {
+  elSbRows.innerHTML = roundScores.map((r, i) => `
+    <div class="sb-row">
+      <span class="sb-num">${i + 1}</span>
+      <span class="sb-city">${r.label}</span>
+      <span class="sb-pts" style="color:${scoreColor(r.score)}">${r.score.toLocaleString()}</span>
+    </div>`).join('');
+  const total = roundScores.reduce((s, r) => s + r.score, 0);
+  elSbTotalPts.textContent = `${total.toLocaleString()} / ${(ROUNDS_PER_GAME * 1000).toLocaleString()}`;
+  elScoreboard.classList.remove('hidden');
+  elSbTotalRow.classList.remove('hidden');
 }
 
 function onArcComplete() {
@@ -232,7 +328,8 @@ function onArcComplete() {
   const score  = calcScore(distMi);
   totalScore  += score;
 
-  startSpinToLocation(loc.lat, loc.lng);
+  roundScores.push({ label: loc.label, score, distMi });
+  updateScoreboard();
 
   answerMarker = createMarker(loc.lat, loc.lng, COLOR_ANSWER);
   _globe.add(answerMarker);
@@ -252,6 +349,12 @@ function onArcComplete() {
 
   elScorePanel.classList.add('visible');
 
+  // Phase-2 zoom: slow cinematic zoom in to final tight view
+  zoomInTimer = setTimeout(() => {
+    startZoom(ZOOM_FINAL, 2.0);
+    zoomInTimer = null;
+  }, 600);
+
   setTimeout(() => {
     const isLastRound = currentRound === ROUNDS_PER_GAME - 1;
     elNextBtn.textContent = isLastRound ? 'See Results' : 'Next Round \u2192';
@@ -267,9 +370,18 @@ function resetGame() {
   currentRound   = 0;
   totalScore     = 0;
   roundLocations = [];
-  arcProgress    = 0;
-  spinActive     = false;
+  spinActive      = false;
+  spinJustStarted = false;
+  spinElapsed     = 0;
+  spinStartQuat   = new THREE.Quaternion();
+  spinTargetQuat  = new THREE.Quaternion();
+  zoomTargetZ  = null;
+  zoomStartZ   = null;
+  zoomElapsed  = 0;
+  if (zoomInTimer) { clearTimeout(zoomInTimer); zoomInTimer = null; }
 
+  roundScores = [];
+  elTopPanel.classList.remove('faded');
   elIntroContent.classList.remove('hidden');
   elRoundContent.classList.add('hidden');
   elHudScore.classList.add('hidden');
@@ -282,14 +394,26 @@ function resetGame() {
   elConfirmBtn.classList.add('hidden');
   elConfirmHint.classList.add('hidden');
   elGameOverPanel.classList.remove('visible');
+  elScoreboard.classList.add('hidden');
+  elSbRows.innerHTML = '';
+  elSbTotalRow.classList.add('hidden');
+  elShareBtn.classList.add('hidden');
+  elShareBtn.textContent = 'Share Results';
   document.body.classList.remove('waiting');
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export function initGame({ scene, globe, camera }) {
-  _globe = globe;
+  _globe  = globe;
+  _camera = camera;
 
+  elTopPanel          = document.getElementById('top-panel');
+  elScoreboard        = document.getElementById('scoreboard');
+  elSbRows            = document.getElementById('sb-rows');
+  elSbTotalRow        = document.getElementById('sb-total-row');
+  elSbTotalPts        = document.getElementById('sb-total-pts');
+  elShareBtn          = document.getElementById('share-btn');
   elIntroContent      = document.getElementById('intro-content');
   elRoundContent      = document.getElementById('round-content');
   elRoundNum          = document.getElementById('round-num');
@@ -311,7 +435,7 @@ export function initGame({ scene, globe, camera }) {
   arcGeo.setDrawRange(0, 0);
   arcLine = new THREE.Line(
     arcGeo,
-    new THREE.LineBasicMaterial({ color: 0xffd700, depthTest: false }),
+    new THREE.LineBasicMaterial({ color: 0xffd700, depthTest: true }),
   );
   arcLine.renderOrder = 2;
   globe.add(arcLine);
@@ -335,6 +459,8 @@ export function initGame({ scene, globe, camera }) {
     elConfirmBtn.classList.add('hidden');
     elConfirmHint.classList.add('hidden');
     spinActive = false;
+    zoomTargetZ = null;
+    if (zoomInTimer) { clearTimeout(zoomInTimer); zoomInTimer = null; }
 
     clearRoundObjects();
 
@@ -358,6 +484,18 @@ export function initGame({ scene, globe, camera }) {
 
   setState(STATE.IDLE);
 
+  elShareBtn.addEventListener('click', () => {
+    const lines = roundScores.map((r, i) =>
+      `${i + 1}. ${r.label.padEnd(22)} ${scoreEmoji(r.score)} ${r.score.toLocaleString()}`
+    );
+    const total = roundScores.reduce((s, r) => s + r.score, 0);
+    const text  = `🌍 Globe Game\n${lines.join('\n')}\nTotal: ${total.toLocaleString()} / ${(ROUNDS_PER_GAME * 1000).toLocaleString()}`;
+    navigator.clipboard.writeText(text).then(() => {
+      elShareBtn.textContent = 'Copied!';
+      setTimeout(() => { elShareBtn.textContent = 'Share Results'; }, 2000);
+    });
+  });
+
   return {
     onGlobeClick(lat, lng) {
       if (state !== STATE.WAITING_FOR_GUESS && state !== STATE.PENDING_GUESS) return;
@@ -365,29 +503,40 @@ export function initGame({ scene, globe, camera }) {
     },
 
     tick(delta) {
+      // Time-based eased zoom animation
+      if (zoomTargetZ !== null) {
+        zoomElapsed = Math.min(zoomElapsed + delta, zoomDuration);
+        const t     = zoomElapsed / zoomDuration;
+        const eased = t < 0.5 ? 2*t*t : -1 + (4 - 2*t)*t; // smooth-step ease-in-out
+        _camera.position.z = zoomStartZ + (zoomTargetZ - zoomStartZ) * eased;
+        if (zoomElapsed >= zoomDuration) { _camera.position.z = zoomTargetZ; zoomTargetZ = null; }
+      }
+
       if (spinActive) {
-        const step = SPIN_SPEED * Math.min(delta, 0.1);
-        const dx   = spinTargetX - _globe.rotation.x;
-        const dy   = spinTargetY - _globe.rotation.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 0.005) {
-          _globe.rotation.x = spinTargetX;
-          _globe.rotation.y = spinTargetY;
+        if (spinJustStarted) {
+          // Capture start orientation here — after applyRotation (inertia) ran in main.js
+          // this frame — so there's no jump at the very first interpolation step.
+          spinStartQuat.copy(_globe.quaternion);
+          spinJustStarted = false;
+        }
+        spinElapsed    += Math.min(delta, 0.1);
+        const raw       = Math.min(spinElapsed / SPIN_DURATION, 1);
+        const eased     = 1 - Math.pow(1 - raw, 2); // ease-out quadratic
+        _globe.quaternion.copy(spinStartQuat).slerp(spinTargetQuat, eased);
+        if (raw >= 1) {
           spinActive = false;
-        } else {
-          const t = Math.min(step / dist, 1);
-          _globe.rotation.x += dx * t;
-          _globe.rotation.y += dy * t;
         }
       }
 
       if (!arcActive || state !== STATE.REVEALING) return;
 
-      arcProgress += Math.min(delta, 0.1) * ARC_SPEED;
-      const done  = arcProgress >= 1.0;
-      const count = done
+      arcElapsed += Math.min(delta, 0.1);
+      const arcT    = Math.min(arcElapsed / (1.0 / ARC_SPEED), 1);
+      const arcEased = 1 - Math.pow(1 - arcT, 2.5); // ease-out — fast start, decelerates
+      const done    = arcT >= 1;
+      const count   = done
         ? ARC_SEGMENTS + 1
-        : Math.min(Math.floor(arcProgress * ARC_SEGMENTS) + 2, ARC_SEGMENTS + 1);
+        : Math.min(Math.floor(arcEased * ARC_SEGMENTS) + 2, ARC_SEGMENTS + 1);
 
       for (let i = 0; i < count; i++) {
         arcPositions[i * 3]     = allArcPoints[i].x;
