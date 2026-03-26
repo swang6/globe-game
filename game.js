@@ -7,7 +7,7 @@ const GLOBE_RADIUS = 1;
 const ARC_SEGMENTS = 64;
 const ARC_SPEED    = 0.7; // progress units per second → ~1.4s for full arc
 const MAX_TILT     = 65 * Math.PI / 180; // mirrors main.js — prevents euler clamp jump after slerp
-const ZOOM_FINAL   = 1.75; // final tight zoom after reveal
+const ZOOM_FINAL   = 1.5; // final tight zoom after reveal
 
 const COLOR_GUESS   = 0xff6b35; // orange
 const COLOR_PENDING = 0xffffff; // white — unconfirmed guess
@@ -155,12 +155,16 @@ function disposeMarker(marker) {
 function computeArcPoints(lat1, lng1, lat2, lng2) {
   const start = latLngToLocal(lat1, lng1, 1).normalize();
   const end   = latLngToLocal(lat2, lng2, 1).normalize();
+  // Scale lift by angular separation: close guesses stay low, far guesses arch high.
+  // dot product gives cos(angle); clamp to [0,1] for acos safety.
+  const angle   = Math.acos(Math.min(1, Math.max(-1, start.dot(end)))); // 0 → π
+  const maxLift = Math.max(0.03, angle / Math.PI * 0.28); // 0.03 when same spot, 0.28 at antipode
   const pts = [];
   for (let i = 0; i <= ARC_SEGMENTS; i++) {
     const t    = i / ARC_SEGMENTS;
     const pt   = new THREE.Vector3().copy(start).lerp(end, t).normalize();
-    const lift = Math.sin(t * Math.PI) * 0.20;
-    pts.push(pt.multiplyScalar(GLOBE_RADIUS + 0.025 + lift));
+    const lift = Math.sin(t * Math.PI) * maxLift;
+    pts.push(pt.multiplyScalar(GLOBE_RADIUS + 0.01 + lift));
   }
   return pts;
 }
@@ -292,6 +296,18 @@ function startSpinToLocation(lat, lng) {
   spinElapsed     = 0;
   spinActive      = true;
   spinJustStarted = true; // spinStartQuat will be captured on the first tick, after inertia runs
+}
+
+// Reorient globe so north pole is up while keeping the current facing longitude.
+// Finds which longitude is facing the camera (+Z in local space), then spins so
+// (lat=0, lng=facingLng) faces camera with north up — same roll-correction as startSpinToLocation.
+function resetNorthUp() {
+  // Globe's local +Z axis in world space = the point currently facing camera
+  const worldFwd = new THREE.Vector3(0, 0, 1);
+  const local    = _globe.worldToLocal(worldFwd.clone()).normalize();
+  const facingLng = Math.atan2(-local.z, local.x) * (180 / Math.PI);
+  // Spin to equator at that longitude (lat=0 means north is unambiguously up)
+  startSpinToLocation(0, facingLng);
 }
 
 function scoreColor(score) {
@@ -435,10 +451,22 @@ export function initGame({ scene, globe, camera }) {
   arcGeo.setDrawRange(0, 0);
   arcLine = new THREE.Line(
     arcGeo,
-    new THREE.LineBasicMaterial({ color: 0xffd700, depthTest: true }),
+    new THREE.LineBasicMaterial({ color: 0xffffff, depthTest: true }),
   );
   arcLine.renderOrder = 2;
   globe.add(arcLine);
+
+  // Glow layer — same geometry, additive blended points give a thick soft glowing line
+  const arcGlow = new THREE.Points(
+    arcGeo,
+    new THREE.PointsMaterial({
+      color: 0xffd700, size: 28, sizeAttenuation: false,
+      map: glowTexture, transparent: true, alphaTest: 0.01,
+      blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true,
+    }),
+  );
+  arcGlow.renderOrder = 1;
+  globe.add(arcGlow);
 
   // Wire buttons — stopPropagation prevents clicks from bleeding through to the canvas
   document.getElementById('start-btn').addEventListener('click', (e) => {
@@ -497,6 +525,8 @@ export function initGame({ scene, globe, camera }) {
   });
 
   return {
+    resetNorthUp() { resetNorthUp(); },
+
     onGlobeClick(lat, lng) {
       if (state !== STATE.WAITING_FOR_GUESS && state !== STATE.PENDING_GUESS) return;
       setPendingGuess(lat, lng);

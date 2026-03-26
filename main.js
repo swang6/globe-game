@@ -108,6 +108,11 @@ if (location.search.includes('debug')) {
 // ─── Game ─────────────────────────────────────────────────────────────────────
 const game = initGame({ scene, globe, camera });
 
+document.getElementById('reset-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  game.resetNorthUp();
+});
+
 // ─── Stars ────────────────────────────────────────────────────────────────────
 // Marsaglia rejection sampling — uniform distribution on sphere (no pole clustering)
 // Uniform sphere sample (Marsaglia) with power-law brightness + subtle color temperature.

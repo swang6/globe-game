@@ -81,6 +81,18 @@
       margin-top: 0.4rem;
     }
 
+    /* ── Reset north-up button (bottom-right) ── */
+    #reset-btn {
+      position: fixed; bottom: 1rem; right: 1rem;
+      font-family: monospace; font-size: 0.75rem;
+      background: rgba(0, 0, 0, 0.5); color: rgba(255, 255, 255, 0.5);
+      border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px;
+      padding: 0.35rem 0.75rem; cursor: pointer;
+      z-index: 100;
+      transition: color 0.2s, border-color 0.2s, background 0.2s;
+    }
+    #reset-btn:hover { color: #fff; border-color: rgba(255,255,255,0.6); background: rgba(0,0,0,0.7); }
+
     /* ── HUD score top-left ── */
     #hud-score {
       position: fixed; top: 1rem; right: 1rem;
@@ -225,6 +237,7 @@
 <body>
   <a href="https://sam-wang.com" class="back-link">&#8592; SW</a>
   <p class="version-label">v0.9</p>
+  <button id="reset-btn" title="Reset view — north up">&#8679; N</button>
 
   <!-- Top panel: intro on load, location label during play -->
   <div id="top-panel" class="panel-base">
